@@ -7,12 +7,17 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # Pinned by digest, not by tag: `archlinux:latest` is a moving target, and
+    # a check suite that cannot be re-run against the same inputs is not
+    # evidence of anything. This is base-20260830.0.582275.
+    container: archlinux@sha256:82b1b08faae9d61e3e7e13d562f4d09114d939105b0d59ff34140f3bd418593a
     steps:
-      - name: Install dependencies
-        run: |
-          pacman -Syu --noconfirm jq python qt6-declarative noto-fonts-emoji fontconfig
-      - uses: actions/checkout@v4
+      # Arch packages are rolling by design, so these resolve forward. They
+      # supply the test tools only; nothing they install ships in the plugin,
+      # which is QML, JavaScript and a bundled JSON data file.
+      - name: Install test dependencies
+        run: pacman -Syu --noconfirm jq python qt6-declarative noto-fonts-emoji fontconfig
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       # check.sh skips what a bare runner lacks (omarchy itself, the shell's
-      # QML modules) and fails on everything it can actually run.
+      # QML modules, a Nerd Font) and fails on everything it can actually run.
       - run: ./check.sh
