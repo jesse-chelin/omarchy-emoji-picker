@@ -55,6 +55,121 @@ TestCase {
     compare(back.keywords["🍕"], "friday")
   }
 
+  // ---- the state file is untrusted input -----------------------------------
+
+  function test_state_rejects_oversized_text() {
+    var big = '{"columns":9,"pad":"' + new Array(70000).join("x") + '"}'
+    var state = Model.parseState(big)
+    compare(state.rejected, "oversized")
+    compare(state.columns, 8)
+  }
+
+  function test_state_rejects_unparseable_and_non_objects() {
+    compare(Model.parseState("{oh no").rejected, "unparseable")
+    compare(Model.parseState("[1,2,3]").rejected, "not an object")
+    compare(Model.parseState("42").rejected, "not an object")
+    compare(Model.parseState("").rejected, "")
+  }
+
+  function test_state_carries_a_producer_side_refusal() {
+    var state = Model.parseState('{"rejected":"not a regular file"}')
+    compare(state.rejected, "not a regular file")
+    compare(state.pinned.length, 0)
+    compare(state.columns, 8)
+  }
+
+  function test_state_maps_are_prototype_free() {
+    var state = Model.parseState("{}")
+    compare(Object.getPrototypeOf(state.usage), null)
+    compare(Object.getPrototypeOf(state.keywords), null)
+    // A plain object would answer this with a function.
+    compare(state.keywords["constructor"], undefined)
+    compare(state.usage["toString"], undefined)
+  }
+
+  function test_state_refuses_prototype_polluting_keys() {
+    var raw = '{"keywords":{"__proto__":"pwned","constructor":"pwned","prototype":"pwned","ok":"fine"}}'
+    var state = Model.parseState(raw)
+    compare(state.keywords["ok"], "fine")
+    compare(state.keywords["__proto__"], undefined)
+    compare(state.keywords["constructor"], undefined)
+    compare(state.keywords["prototype"], undefined)
+    compare(({}).pwned, undefined)
+    compare(({}).polluted, undefined)
+  }
+
+  function test_state_caps_pinned_and_dedupes() {
+    var pins = []
+    for (var i = 0; i < 500; i++) pins.push("p" + i)
+    pins.push("p0")
+    var state = Model.parseState(JSON.stringify({ pinned: pins }))
+    compare(state.pinned.length, 200)
+    compare(state.pinned[0], "p0")
+
+    var dupes = Model.parseState('{"pinned":["a","a","b"]}')
+    compare(dupes.pinned.length, 2)
+  }
+
+  function test_state_drops_oversized_and_non_string_keys() {
+    var longKey = new Array(200).join("k")
+    var raw = JSON.stringify({ pinned: [longKey, "ok", 7, null, ""] })
+    var state = Model.parseState(raw)
+    compare(state.pinned.length, 1)
+    compare(state.pinned[0], "ok")
+  }
+
+  function test_state_bounds_usage_entries() {
+    var usage = {}
+    for (var i = 0; i < 400; i++) usage["e" + i] = { n: 2, t: 5 }
+    usage["junk"] = "not an object"
+    usage["zero"] = { n: 0, t: 5 }
+    usage["huge"] = { n: 1e12, t: 5 }
+    var state = Model.parseState(JSON.stringify({ usage: usage }))
+    var keys = Object.keys(state.usage)
+    verify(keys.length <= 200)
+    compare(state.usage["junk"], undefined)
+    compare(state.usage["zero"], undefined)
+    if (state.usage["huge"]) compare(state.usage["huge"].n, 1000000)
+  }
+
+  function test_state_clamps_a_future_timestamp() {
+    var future = Date.now() + 86400000 * 3650
+    var state = Model.parseState(JSON.stringify({ usage: { "a": { n: 1, t: future } } }))
+    verify(state.usage["a"].t <= Date.now())
+  }
+
+  function test_state_bounds_keywords() {
+    var words = new Array(400).join("w")
+    var keywords = { "a": words, "b": 12, "c": null, "d": "fine" }
+    for (var i = 0; i < 600; i++) keywords["k" + i] = "x"
+    var state = Model.parseState(JSON.stringify({ keywords: keywords }))
+    compare(state.keywords["a"].length, 128)
+    compare(state.keywords["b"], undefined)
+    compare(state.keywords["c"], undefined)
+    verify(Object.keys(state.keywords).length <= 500)
+  }
+
+  function test_serialized_state_survives_its_own_round_trip() {
+    var state = Model.parseState("{}")
+    state.pinned = ["\ud83c\udf55"]
+    state.keywords["\ud83c\udf55"] = "friday night"
+    state.usage["\ud83c\udf55"] = { n: 3, t: 1000 }
+    var back = Model.parseState(Model.serializeState(state))
+    compare(back.pinned.length, 1)
+    compare(back.keywords["\ud83c\udf55"], "friday night")
+    compare(back.usage["\ud83c\udf55"].n, 3)
+    compare(back.rejected, "")
+  }
+
+  function test_serialize_caps_what_a_mutation_can_grow() {
+    var state = Model.parseState("{}")
+    for (var i = 0; i < 900; i++) state.keywords["k" + i] = "x"
+    for (var j = 0; j < 900; j++) state.pinned.push("p" + j)
+    var back = Model.parseState(Model.serializeState(state))
+    compare(back.pinned.length, 200)
+    verify(Object.keys(back.keywords).length <= 500)
+  }
+
   function test_tone_applies_only_where_supported() {
     var d = data()
     compare(Model.withTone(d.items[1], 3), "👋🏽")

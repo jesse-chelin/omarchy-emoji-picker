@@ -26,9 +26,12 @@ if [[ -d $SHELL_DIR ]] && command -v qmllint >/dev/null; then
   ln -s "$SHELL_DIR" "$imports/qs"
   # Types injected by the plugin host resolve to bare QObject at lint time,
   # and an id from an enclosing scope inside a delegate is always
-  # "unqualified"; neither is actionable.
+  # "unqualified"; neither is actionable. Quickshell's Process.exited carries
+  # a QProcess::ExitStatus that its qmltypes does not export, so lint cannot
+  # compile any handler for it; the exit code the handler does read is
+  # covered by the runtime check below.
   out=$(qmllint -I "$imports" ./*.qml 2>&1 | grep -E '^(Warning|Error)' \
-    | grep -vE 'not found on type "QObject"|Unqualified access|PanelWindow is not creatable')
+    | grep -vE 'not found on type "QObject"|Unqualified access|PanelWindow is not creatable|QProcess::ExitStatus')
   rm -rf "$imports"
   if [[ -z $out ]]; then note "qmllint" "clean"
   else note "qmllint" "FAILED"; echo "$out"; status=1; fi
@@ -63,6 +66,11 @@ else note "qml structure" "FAILED"; echo "$out"; status=1; fi
 # here instead.
 if out=$(python3 tests/test_data.py 2>/dev/null); then note "emoji data" "ok"
 else note "emoji data" "FAILED"; echo "$out"; status=1; fi
+
+# The state reader is the plugin's only trust boundary against the filesystem,
+# so each refusal is tested against the hostile thing itself.
+if out=$(python3 tests/test_read_state.py); then note "state reader" "ok"
+else note "state reader" "FAILED"; echo "$out"; status=1; fi
 
 # Every Nerd Font glyph in the source has to exist in the font and depict
 # what the test pins it to. Shipping a wrong codepoint is silent.

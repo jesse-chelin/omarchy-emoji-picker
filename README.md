@@ -91,6 +91,37 @@ Pins, usage counts, custom keywords and preferences live in
 `~/.local/state/omarchy/emoji-picker.json`. Delete it to start over. That file
 is the only thing the plugin writes outside its own folder.
 
+## Trust boundaries
+
+The picker runs inside a process that lives as long as your session, so the
+two places where something outside it gets a say are deliberately narrow.
+
+**The preferences file.** It sits in a directory anything running as you can
+write, so it is read by `read-state.py` rather than by QML, which has no way
+to cap what it reads. That reader opens with `O_NOFOLLOW` and `O_NONBLOCK`,
+refuses a symlink, anything that is not a regular file, anything owned by
+another user, and anything over 64 KiB, and never hands back more than that.
+Whatever survives is then rebuilt field by field with the same bounds it is
+written under, into prototype-free maps that refuse `__proto__`,
+`constructor` and `prototype` as keys. A file that is refused costs you your
+pins, not your session: the picker opens on defaults and says in the footer
+why. `tests/test_read_state.py` builds each hostile file and checks it.
+
+**The three child processes.** A probe for `wtype`, the clipboard helper, and
+the optional `wtype` install. Each runs with a cleared environment holding
+only `PATH`, `LANG` and the Wayland socket variables, so `BASH_ENV` and the
+loader hooks cannot reach them. `insert.sh` resolves every tool it uses once
+against that fixed `PATH` and checks each is an executable regular file. Every
+one is supervised by a watchdog that sends `TERM` and then `KILL`, and the
+foreground clipboard owner is reaped on every exit path including a signal, so
+an interrupted paste cannot leave a process holding your clipboard. Exit
+statuses are read rather than discarded, which is how the picker knows to say
+it copied when it could not paste.
+
+The emoji data file is read with QML's `FileView` because it lives inside the
+plugin's own checkout: anyone able to rewrite it can rewrite the QML beside it,
+so a size check there would be a check against nothing.
+
 ## Removal
 
 ```sh

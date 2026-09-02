@@ -14,6 +14,44 @@ var FRECENCY_MAX = 3000
 var FRECENCY_MIDPOINT = 3
 var PINNED_BONUS = 100000
 
+// The state file is the one input the picker does not produce itself in the
+// same breath it reads it, so it is treated as untrusted. read-state.py caps
+// the bytes before any of it reaches QML; these bound what a payload under
+// that cap can still cost once parsed, and they are also the write limits, so
+// a file this plugin wrote always survives a round trip unchanged.
+var MAX_STATE_CHARS = 65536
+var MAX_PINNED = 200
+var MAX_USAGE = 200
+var MAX_KEYWORD_ENTRIES = 500
+var MAX_KEY_CHARS = 64
+var MAX_KEYWORD_CHARS = 128
+
+// Maps built from parsed JSON are keyed by strings from the file. A plain
+// object literal would let "__proto__" reach Object.prototype and let
+// "constructor" read back as a function from an empty map, so every map here
+// is prototype-free and these three keys are refused outright.
+function emptyMap() {
+  return Object.create(null)
+}
+
+function safeKey(key, limit) {
+  if (typeof key !== "string") return ""
+  if (key.length === 0 || key.length > (limit || MAX_KEY_CHARS)) return ""
+  if (key === "__proto__" || key === "constructor" || key === "prototype") return ""
+  return key
+}
+
+function boundedString(value, limit) {
+  if (typeof value !== "string") return ""
+  return value.length > limit ? value.slice(0, limit) : value
+}
+
+function boundedInt(value, min, max) {
+  var n = Math.round(Number(value))
+  if (!isFinite(n)) return min
+  return Math.max(min, Math.min(max, n))
+}
+
 function parseData(raw) {
   var data
   try {
@@ -51,23 +89,94 @@ function queryTokens(query) {
   return normalized ? normalized.split(" ") : []
 }
 
+function defaultState() {
+  return {
+    pinned: [],
+    usage: emptyMap(),
+    keywords: emptyMap(),
+    skinTone: 0,
+    columns: 8,
+    primaryAction: "paste",
+    recentLimit: 2,
+    rejected: ""
+  }
+}
+
+// Every field is rebuilt from scratch rather than carried over from the parse,
+// so nothing the file contains reaches the long-lived model except values of
+// the right type inside the right bounds. Anything else is dropped silently:
+// a picker that refuses to open because its preferences file is malformed is
+// worse than one that opens with default preferences.
 function parseState(raw) {
+  var text = String(raw || "")
+  var state = defaultState()
+  if (text.length === 0) return state
+  if (text.length > MAX_STATE_CHARS) {
+    state.rejected = "oversized"
+    return state
+  }
+
   var data
   try {
-    data = JSON.parse(String(raw || ""))
+    data = JSON.parse(text)
   } catch (e) {
-    data = null
+    state.rejected = "unparseable"
+    return state
   }
-  if (!data || typeof data !== "object") data = {}
-  return {
-    pinned: Array.isArray(data.pinned) ? data.pinned.slice() : [],
-    usage: data.usage && typeof data.usage === "object" ? data.usage : {},
-    keywords: data.keywords && typeof data.keywords === "object" ? data.keywords : {},
-    skinTone: clampInt(data.skinTone, 0, 5, 0),
-    columns: clampInt(data.columns, 6, 10, 8),
-    primaryAction: data.primaryAction === "copy" ? "copy" : "paste",
-    recentLimit: clampInt(data.recentLimit, 0, 5, 2)
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    state.rejected = "not an object"
+    return state
   }
+
+  // read-state.py reports why it would not hand over a file by putting the
+  // reason here, so a refusal on the producer side still reaches the footer.
+  state.rejected = boundedString(data.rejected, 120)
+
+  state.skinTone = clampInt(data.skinTone, 0, 5, 0)
+  state.columns = clampInt(data.columns, 6, 10, 8)
+  state.primaryAction = data.primaryAction === "copy" ? "copy" : "paste"
+  state.recentLimit = clampInt(data.recentLimit, 0, 5, 2)
+
+  if (Array.isArray(data.pinned)) {
+    var seen = emptyMap()
+    for (var i = 0; i < data.pinned.length && state.pinned.length < MAX_PINNED; i++) {
+      var pin = safeKey(data.pinned[i])
+      if (!pin || seen[pin]) continue
+      seen[pin] = true
+      state.pinned.push(pin)
+    }
+  }
+
+  if (data.usage && typeof data.usage === "object" && !Array.isArray(data.usage)) {
+    var used = 0
+    for (var uk in data.usage) {
+      if (used >= MAX_USAGE) break
+      var usageKey = safeKey(uk)
+      if (!usageKey) continue
+      var entry = data.usage[uk]
+      if (!entry || typeof entry !== "object") continue
+      var count = boundedInt(entry.n, 0, 1000000)
+      if (count <= 0) continue
+      // A timestamp from the future would never decay. Clamp it to now.
+      state.usage[usageKey] = { n: count, t: boundedInt(entry.t, 0, Date.now()) }
+      used++
+    }
+  }
+
+  if (data.keywords && typeof data.keywords === "object" && !Array.isArray(data.keywords)) {
+    var kept = 0
+    for (var kk in data.keywords) {
+      if (kept >= MAX_KEYWORD_ENTRIES) break
+      var keywordKey = safeKey(kk)
+      if (!keywordKey) continue
+      var words = boundedString(data.keywords[kk], MAX_KEYWORD_CHARS)
+      if (!words) continue
+      state.keywords[keywordKey] = words
+      kept++
+    }
+  }
+
+  return state
 }
 
 function clampInt(value, min, max, fallback) {
@@ -251,13 +360,13 @@ function rank(items, query, opts) {
 }
 
 function pinnedIndexOf(pinned) {
-  var index = {}
+  var index = emptyMap()
   for (var i = 0; i < pinned.length; i++) index[pinned[i]] = i
   return index
 }
 
 function itemsByChar(items) {
-  var index = {}
+  var index = emptyMap()
   for (var i = 0; i < items.length; i++) index[items[i].e] = items[i]
   return index
 }
@@ -403,7 +512,7 @@ function togglePinned(pinned, emoji) {
 }
 
 function recordUse(usage, emoji, now) {
-  var next = {}
+  var next = emptyMap()
   for (var k in usage) next[k] = usage[k]
   var entry = next[emoji] || { n: 0, t: 0 }
   next[emoji] = { n: (Number(entry.n) || 0) + 1, t: now }
@@ -419,21 +528,53 @@ function pruneUsage(usage, now, keep) {
     if (score > 0.01) scored.push({ key: k, score: score })
   }
   scored.sort(function(a, b) { return b.score - a.score })
-  var out = {}
-  var max = Math.min(scored.length, keep || 200)
+  var out = emptyMap()
+  var max = Math.min(scored.length, keep || MAX_USAGE)
   for (var i = 0; i < max; i++) out[scored[i].key] = usage[scored[i].key]
   return out
 }
 
+// Bounded on the way out as well as on the way in, so the file on disk always
+// satisfies what parseState will accept. Without this a single mutation could
+// write a 501st keyword that the next read would silently drop, and the
+// picker would disagree with itself about what it had saved.
 function serializeState(state) {
+  var usage = emptyMap()
+  var usageCount = 0
+  for (var uk in state.usage) {
+    if (usageCount >= MAX_USAGE) break
+    var key = safeKey(uk)
+    if (!key) continue
+    usage[key] = { n: boundedInt(state.usage[uk].n, 0, 1000000), t: boundedInt(state.usage[uk].t, 0, Date.now()) }
+    usageCount++
+  }
+
+  var keywords = emptyMap()
+  var keywordCount = 0
+  for (var kk in state.keywords) {
+    if (keywordCount >= MAX_KEYWORD_ENTRIES) break
+    var keywordKey = safeKey(kk)
+    if (!keywordKey) continue
+    var words = boundedString(state.keywords[kk], MAX_KEYWORD_CHARS)
+    if (!words) continue
+    keywords[keywordKey] = words
+    keywordCount++
+  }
+
+  var pinned = []
+  for (var i = 0; i < state.pinned.length && pinned.length < MAX_PINNED; i++) {
+    var pin = safeKey(state.pinned[i])
+    if (pin) pinned.push(pin)
+  }
+
   return JSON.stringify({
     version: 1,
-    pinned: state.pinned,
-    usage: state.usage,
-    keywords: state.keywords,
-    skinTone: state.skinTone,
-    columns: state.columns,
-    primaryAction: state.primaryAction,
-    recentLimit: state.recentLimit
+    pinned: pinned,
+    usage: usage,
+    keywords: keywords,
+    skinTone: clampInt(state.skinTone, 0, 5, 0),
+    columns: clampInt(state.columns, 6, 10, 8),
+    primaryAction: state.primaryAction === "copy" ? "copy" : "paste",
+    recentLimit: clampInt(state.recentLimit, 0, 5, 2)
   }, null, 2) + "\n"
 }

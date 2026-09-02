@@ -50,6 +50,50 @@ Item {
   // it the picker still works, so it says so once in the footer and falls
   // back to copying rather than firing a no-op and looking broken.
   property bool canPaste: true
+  property string storeRejected: ""
+  property var pendingInsert: null
+
+  // Every child runs with this and nothing else. A cleared environment is
+  // what actually closes BASH_ENV, ENV and the loader hooks, since a script
+  // unsetting them has already been started by the time it could. Only the
+  // handful of variables the Wayland clipboard tools genuinely need are
+  // passed through, and an empty one is omitted rather than passed empty.
+  readonly property var childEnvironment: {
+    var env = { "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8" }
+    var names = ["HOME", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
+    for (var i = 0; i < names.length; i++) {
+      var value = Quickshell.env(names[i])
+      if (value) env[names[i]] = value
+    }
+    return env
+  }
+
+  // A child that never exits would otherwise pin a collector open forever
+  // inside a process that lives as long as the session. TERM first, KILL if
+  // it will not go.
+  component Watchdog: Timer {
+    property var proc: null
+    property bool escalated: false
+
+    repeat: false
+    interval: 3000
+    onTriggered: {
+      if (!proc || !proc.running) return
+      if (escalated) {
+        proc.signal(9)
+        return
+      }
+      escalated = true
+      interval = 1000
+      restart()
+    }
+
+    function arm() {
+      escalated = false
+      interval = 3000
+      restart()
+    }
+  }
 
   // Shares the [menu] surface tokens, so a theme that styles the Omarchy
   // menu styles this picker too.
@@ -93,8 +137,10 @@ Item {
     root.cursorActive = true
     pointerGate.reset()
     root.rebuild()
-    pasteProbe.running = true
-    if (!root.canPaste) root.flash("wtype is not installed, so Enter copies. Ctrl+K to install it")
+    // Both answers arrive asynchronously, so whatever needs saying is said by
+    // the handler that learns it, not here, where it would report the
+    // previous open's answer.
+    root.refreshEnvironment()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -122,9 +168,13 @@ Item {
   }
 
   function loadStore(raw) {
-    root.store = Model.parseState(raw)
+    var parsed = Model.parseState(raw)
+    root.storeRejected = parsed.rejected || ""
+    root.store = parsed
     root.storeLoaded = true
     root.rebuild()
+    if (root.opened && root.storeRejected)
+      root.flash("Preferences file ignored (" + root.storeRejected + "), using defaults")
   }
 
   function saveStore() {
@@ -230,10 +280,23 @@ Item {
     root.mutateStore({ usage: Model.pruneUsage(Model.recordUse(root.store.usage, emoji, now), now, 200) })
   }
 
+  // Run as a child rather than detached, so a failure is observable and a hang
+  // is killable. One insert at a time, with the newest request queued: a
+  // second paste arriving mid-paste must not race the first for ownership of
+  // the clipboard.
   function emitText(text, kind, keepOpen) {
     if (!text) return
-    Quickshell.execDetached([root.pluginDir + "/insert.sh", kind, text])
+    root.pendingInsert = { kind: kind, text: text }
+    root.startInsert()
     if (!keepOpen) root.dismiss()
+  }
+
+  function startInsert() {
+    if (insertProc.running || !root.pendingInsert) return
+    var job = root.pendingInsert
+    root.pendingInsert = null
+    insertProc.command = [root.pluginDir + "/insert.sh", job.kind, job.text]
+    insertProc.running = true
   }
 
   function insertCurrent(kind, keepOpen) {
@@ -606,7 +669,10 @@ Item {
     } else if (event.text && event.text.length === 1
                && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
                && !(event.modifiers & Qt.ControlModifier)) {
-      root.keywordDraft = root.keywordDraft + event.text
+      // Bounded here as well as in the model, so the field cannot grow past
+      // what will survive being saved and read back.
+      if (root.keywordDraft.length < Model.MAX_KEYWORD_CHARS)
+        root.keywordDraft = root.keywordDraft + event.text
     } else {
       event.accepted = false
     }
@@ -622,27 +688,93 @@ Item {
     onLoadFailed: root.loadData("{}")
   }
 
+  // Write-only. blockAllReads keeps FileView from ever pulling this path into
+  // memory: it is in a directory the user can write, and QML has no way to cap
+  // what it reads. Reading goes through read-state.py, which caps the bytes,
+  // refuses a symlink and refuses anything that is not a regular file. Writes
+  // stay here because the content is ours and atomicWrites replaces the path
+  // rather than following it.
   FileView {
     id: stateFile
     path: root.statePath
-    watchChanges: true
+    blockAllReads: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.loadStore(text())
-    onLoadFailed: root.loadStore("{}")
-    onFileChanged: reload()
   }
 
   Process {
-    id: pasteProbe
-    command: ["sh", "-c", "command -v wtype >/dev/null 2>&1 && echo 1 || echo 0"]
+    id: stateReader
+    command: [root.pluginDir + "/read-state.py", root.statePath]
+    clearEnvironment: true
+    environment: root.childEnvironment
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.canPaste = String(text).trim() === "1"
+      onStreamFinished: root.loadStore(text)
+    }
+    onRunningChanged: {
+      if (running) stateWatchdog.arm()
+      else stateWatchdog.stop()
     }
   }
 
-  Component.onCompleted: pasteProbe.running = true
+  Watchdog { id: stateWatchdog; proc: stateReader }
+
+  Process {
+    id: pasteProbe
+    command: [root.pluginDir + "/insert.sh", "probe"]
+    clearEnvironment: true
+    environment: root.childEnvironment
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.canPaste = String(text).trim() === "1"
+        // Never on top of a rejected-preferences message: that one is rarer
+        // and the user has probably not seen it before.
+        if (root.opened && !root.canPaste && !root.status)
+          root.flash("wtype is not installed, so Enter copies. Ctrl+K to install it")
+      }
+    }
+    onRunningChanged: {
+      if (running) probeWatchdog.arm()
+      else probeWatchdog.stop()
+    }
+  }
+
+  Watchdog { id: probeWatchdog; proc: pasteProbe }
+
+  Process {
+    id: insertProc
+    clearEnvironment: true
+    environment: root.childEnvironment
+    onRunningChanged: {
+      if (running) insertWatchdog.arm()
+      else insertWatchdog.stop()
+    }
+    onExited: function(exitCode) {
+      // 3 is insert.sh saying it copied because wtype is not there. Anything
+      // else nonzero is a real failure and the user should hear about it
+      // rather than watching nothing happen.
+      if (exitCode === 3) {
+        root.canPaste = false
+        root.flash("wtype is missing, so it was copied instead")
+      } else if (exitCode !== 0) {
+        root.flash("Could not insert (status " + exitCode + ")")
+      }
+      root.startInsert()
+    }
+  }
+
+  Watchdog { id: insertWatchdog; proc: insertProc }
+
+  // Both are re-run on open rather than only at load, so installing wtype or
+  // editing the preferences file by hand takes effect at the next summon
+  // instead of at the next shell restart.
+  function refreshEnvironment() {
+    if (!pasteProbe.running) pasteProbe.running = true
+    if (!stateReader.running) stateReader.running = true
+  }
+
+  Component.onCompleted: root.refreshEnvironment()
 
   Timer {
     id: statusTimer
