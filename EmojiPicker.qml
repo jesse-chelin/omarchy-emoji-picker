@@ -93,7 +93,8 @@ Item {
     root.cursorActive = true
     pointerGate.reset()
     root.rebuild()
-    if (!root.canPaste) root.flash("wtype is not installed, so Enter copies instead of pasting")
+    pasteProbe.running = true
+    if (!root.canPaste) root.flash("wtype is not installed, so Enter copies. Ctrl+K to install it")
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -263,6 +264,12 @@ Item {
     return root.insertCurrent(root.primaryAction(), false)
   }
 
+  function installPaste() {
+    root.dismiss()
+    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-install-app", "wtype", "wtype"])
+    return "ok"
+  }
+
   function copyUnicode() {
     if (!root.currentItem) return "empty"
     var label = Model.unicodeLabel(root.currentText)
@@ -303,6 +310,8 @@ Item {
     if (kind === "actions") {
       var primary = root.primaryAction()
       var needsWtype = root.canPaste ? "" : "needs wtype"
+      if (!root.canPaste)
+        out.push({ id: "install-wtype", label: "Install wtype", hint: "opens a terminal" })
       out.push({ id: "primary", label: primary === "paste" ? "Paste" : "Copy", hint: "Enter" })
       out.push({ id: primary === "paste" ? "copy" : "paste",
                  label: primary === "paste" ? "Copy" : "Paste",
@@ -395,6 +404,7 @@ Item {
       else if (entry.id === "keywords") root.openKeywordEditor()
       else if (entry.id === "category") root.openMenu("category")
       else if (entry.id === "prefs") root.openMenu("prefs")
+      else if (entry.id === "install-wtype") root.installPaste()
       return
     }
     if (root.menuKind === "tone") {
@@ -625,13 +635,14 @@ Item {
 
   Process {
     id: pasteProbe
-    running: true
     command: ["sh", "-c", "command -v wtype >/dev/null 2>&1 && echo 1 || echo 0"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.canPaste = String(text).trim() === "1"
     }
   }
+
+  Component.onCompleted: pasteProbe.running = true
 
   Timer {
     id: statusTimer

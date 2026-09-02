@@ -64,8 +64,10 @@ needs `wtype`:
 sudo pacman -S wtype
 ```
 
-Without it the picker still works and Enter copies instead, and it says so in
-the footer rather than firing a paste that goes nowhere. The paste path holds
+Ctrl+K offers to install it, which hands off to `omarchy install app` and runs
+the install in a floating terminal where you can answer the password prompt.
+Without wtype the picker still works and Enter copies instead, and it says so
+in the footer rather than firing a paste that goes nowhere. The paste path holds
 the clipboard only while the keystroke lands, so whatever you had copied
 before is still there afterwards.
 
