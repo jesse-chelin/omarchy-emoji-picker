@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jesse-chelin.emoji-picker",
+  "name": "Emoji Picker",
+  "version": "1.0.0",
+  "author": "Jesse Chelin",
+  "license": "MIT",
+  "description": "Raycast-style emoji and symbol picker: search, pins, frecency, skin tones, custom keywords and an action panel",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "EmojiPicker.qml"
+  }
+}
