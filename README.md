@@ -28,13 +28,22 @@ insert with a keystroke.
 omarchy plugin add https://github.com/jesse-chelin/omarchy-emoji-picker --enable
 ```
 
-Then bind a key. Omarchy ships `SUPER + CTRL + E` pointed at its built-in
-picker, so either replace that binding or add your own in
-`~/.config/omarchy/bindings.lua`:
+Then bind a key in `~/.config/hypr/bindings.lua`:
 
 ```lua
 o.bind("SUPER + PERIOD", "Emoji Picker", "omarchy-shell shell toggle io.github.jesse-chelin.emoji-picker")
 ```
+
+Omarchy ships `SUPER + CTRL + E` pointed at its own built-in picker. To take
+that key instead, unbind it first:
+
+```lua
+hl.unbind("SUPER + CTRL + E")
+o.bind("SUPER + CTRL + E", "Emoji Picker", "omarchy-shell shell toggle io.github.jesse-chelin.emoji-picker")
+```
+
+The built-in picker stays installed either way and is still reachable from the
+Omarchy menu under Emoji.
 
 ## Keys
 
@@ -57,24 +66,42 @@ o.bind("SUPER + PERIOD", "Emoji Picker", "omarchy-shell shell toggle io.github.j
 
 ## Pasting needs wtype
 
-Inserting into the focused window is a synthesised `Shift+Insert`, which
-needs `wtype`:
+Inserting into the focused window is a synthesised `Shift+Insert`, which needs
+the `wtype` package. Omarchy installs it by default, so most systems already
+have it.
+
+If it is missing, the picker says so in the footer and Enter copies instead of
+firing a paste that goes nowhere, and **Ctrl+K** offers **Install wtype**. That
+action runs `omarchy install app wtype wtype`, which is Omarchy's own
+installer: it opens a floating terminal and runs `omarchy pkg add` there, so
+any password prompt appears somewhere you can answer it. The plugin itself uses no
+sudo or pkexec, and ships no installer of its own. Installing by hand
+does the same thing:
 
 ```sh
-sudo pacman -S wtype
+omarchy pkg add wtype
 ```
 
-Ctrl+K offers to install it, which hands off to `omarchy install app` and runs
-the install in a floating terminal where you can answer the password prompt.
-Without wtype the picker still works and Enter copies instead, and it says so
-in the footer rather than firing a paste that goes nowhere. The paste path holds
-the clipboard only while the keystroke lands, so whatever you had copied
-before is still there afterwards.
+The paste path holds the clipboard only while the keystroke lands, so whatever
+you had copied before is still there afterwards.
 
 ## State
 
 Pins, usage counts, custom keywords and preferences live in
-`~/.local/state/omarchy/emoji-picker.json`. Delete it to start over.
+`~/.local/state/omarchy/emoji-picker.json`. Delete it to start over. That file
+is the only thing the plugin writes outside its own folder.
+
+## Removal
+
+```sh
+omarchy plugin remove io.github.jesse-chelin.emoji-picker
+rm -f ~/.local/state/omarchy/emoji-picker.json
+```
+
+Then remove the binding you added to `~/.config/hypr/bindings.lua`, including
+the `hl.unbind("SUPER + CTRL + E")` line if you used it, and run
+`hyprctl reload`. The plugin registers nothing with any service, holds no
+credentials, and leaves nothing else behind.
 
 ## Regenerating the emoji data
 
