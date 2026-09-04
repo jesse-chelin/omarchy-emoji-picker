@@ -34,13 +34,23 @@ def load(path, name):
 
 
 def alive(pid):
+    """Running, as opposed to merely still having a pid.
+
+    An orphan whose parent has died is reparented to init, and in a container
+    init is often the job's own shell, which reaps nothing. The pid then
+    lingers as a zombie: kill(pid, 0) succeeds and the process is nonetheless
+    gone. On a normal desktop systemd reaps it before anyone looks, which is
+    why this only ever fails in CI.
+    """
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        with open('/proc/%d/stat' % pid, 'rb') as handle:
+            raw = handle.read()
+    except OSError:
         return False
-    except PermissionError:
-        return True
-    return True
+    try:
+        return raw[raw.rindex(b')') + 2:].split()[0] != b'Z'
+    except (ValueError, IndexError):
+        return False
 
 
 def wait_gone(pid, seconds):
