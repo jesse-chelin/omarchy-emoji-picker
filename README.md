@@ -88,8 +88,8 @@ you had copied before is still there afterwards.
 ## State
 
 Pins, usage counts, custom keywords and preferences live in
-`~/.local/state/omarchy/emoji-picker.json`. Delete it to start over. That file
-is the only thing the plugin writes outside its own folder.
+`~/.local/state/omarchy/emoji-picker.json`, written `0600`. Delete it to start
+over. That file is the only thing the plugin writes outside its own folder.
 
 ## Trust boundaries
 
@@ -97,26 +97,49 @@ The picker runs inside a process that lives as long as your session, so the
 two places where something outside it gets a say are deliberately narrow.
 
 **The preferences file.** It sits in a directory anything running as you can
-write, so it is read by `read-state.py` rather than by QML, which has no way
-to cap what it reads. That reader opens with `O_NOFOLLOW` and `O_NONBLOCK`,
-refuses a symlink, anything that is not a regular file, anything owned by
-another user, and anything over 64 KiB, and never hands back more than that.
-Whatever survives is then rebuilt field by field with the same bounds it is
-written under, into prototype-free maps that refuse `__proto__`,
-`constructor` and `prototype` as keys. A file that is refused costs you your
-pins, not your session: the picker opens on defaults and says in the footer
-why. `tests/test_read_state.py` builds each hostile file and checks it.
+write, so both reading and writing go through `state.py` rather than through
+QML, which takes a path, follows every component of it, and reads without a
+ceiling. That helper walks the directory chain one component at a time from
+your home, opening each with `O_NOFOLLOW | O_DIRECTORY` and checking it is
+owned by you and not writable by anyone else, then opens, reads and renames
+**relative to the directory descriptor** that survived those checks. A path
+resolved once and used again is a path that can change in between, and the
+parent directories are as replaceable as the file.
 
-**The three child processes.** A probe for `wtype`, the clipboard helper, and
-the optional `wtype` install. Each runs with a cleared environment holding
-only `PATH`, `LANG` and the Wayland socket variables, so `BASH_ENV` and the
-loader hooks cannot reach them. `insert.sh` resolves every tool it uses once
-against that fixed `PATH` and checks each is an executable regular file. Every
-one is supervised by a watchdog that sends `TERM` and then `KILL`, and the
-foreground clipboard owner is reaped on every exit path including a signal, so
-an interrupted paste cannot leave a process holding your clipboard. Exit
-statuses are read rather than discarded, which is how the picker knows to say
-it copied when it could not paste.
+The file itself must be a regular file, owned by you, not writable by others,
+with a single hard link, and no larger than 64 KiB, and it is refused rather
+than truncated. Publishing is a rename inside that same descriptor from a
+temporary created `O_EXCL` at `0600`, with the mode read back rather than
+assumed, so it is never briefly readable by anyone else. Whatever survives is
+rebuilt field by field with the same bounds it is written under, into
+prototype-free maps that refuse `__proto__`, `constructor` and `prototype` as
+keys. A file that is refused costs you your pins, not your session: the picker
+opens on defaults and says in the footer why.
+
+**The child processes.** A probe for `wtype`, the clipboard helper, the
+preferences reader and writer, and the optional `wtype` install. Each runs
+with a cleared environment holding only `PATH`, `LANG`, the state directory
+variables and the Wayland socket variables, so `BASH_ENV` and the loader hooks
+cannot reach them. `insert.py` resolves every tool it uses against a fixed
+list of directories, checks each is an executable regular file, and gives each
+its own timeout.
+
+Each helper makes itself the leader of its own process group before doing
+anything, and everything it starts joins that group. That matters for
+teardown: a `SIGKILL` aimed at the helper alone would leave `wl-copy` running
+with your clipboard in its hands. So the escalation goes to the group.
+`TERM` first, to the helper, which ends its tools and hands the clipboard
+back; if it has not gone a second later, `reap-group.py` signals the whole
+group, waits for it to actually empty, `KILL`s what is left and waits again. It
+runs detached so it survives the picker being destroyed, which is when it is
+needed most, and it refuses to signal a group whose leader is not still the
+leader or whose command line does not mention this plugin. The same ladder
+runs when an insert is superseded by a newer one and when the picker itself is
+destroyed, so nothing it started outlives it.
+
+`insert.py` also carries its own alarm, so it bounds itself even when run by
+hand with nobody supervising, and its teardown runs on normal return, on
+`SIGTERM`, `SIGINT` and `SIGHUP`, and on that alarm.
 
 The emoji data file is read with QML's `FileView` because it lives inside the
 plugin's own checkout: anyone able to rewrite it can rewrite the QML beside it,

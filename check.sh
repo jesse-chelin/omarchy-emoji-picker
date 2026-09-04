@@ -67,17 +67,30 @@ else note "qml structure" "FAILED"; echo "$out"; status=1; fi
 if out=$(python3 tests/test_data.py 2>/dev/null); then note "emoji data" "ok"
 else note "emoji data" "FAILED"; echo "$out"; status=1; fi
 
-# The state reader is the plugin's only trust boundary against the filesystem,
-# so each refusal is tested against the hostile thing itself.
-if out=$(python3 tests/test_read_state.py); then note "state reader" "ok"
-else note "state reader" "FAILED"; echo "$out"; status=1; fi
+# The preferences file is the plugin's only trust boundary against the
+# filesystem, so each refusal is tested against the hostile thing itself,
+# including a swapped parent directory.
+if out=$(python3 tests/test_state.py); then note "state file" "ok"
+else note "state file" "FAILED"; echo "$out"; status=1; fi
+
+# Signalling only the tracked process leaves its descendants holding the
+# clipboard, so group ownership and the reaper are tested against a real
+# group with a child that ignores SIGTERM.
+if out=$(python3 tests/test_processes.py); then note "process groups" "ok"
+else note "process groups" "FAILED"; echo "$out"; status=1; fi
 
 # Every Nerd Font glyph in the source has to exist in the font and depict
 # what the test pins it to. Shipping a wrong codepoint is silent.
 if out=$(python3 tests/test_glyphs.py); then note "glyphs" "ok"
 else note "glyphs" "FAILED"; echo "$out"; status=1; fi
 
-if bash -n insert.sh; then note "insert.sh" "ok"
-else note "insert.sh" "FAILED"; status=1; fi
+# The helpers are executed by their shebang, so the bit matters as much as
+# the code.
+missing=""
+for helper in state.py insert.py reap-group.py; do
+  [[ -x $helper ]] || missing="$missing $helper"
+done
+if [[ -z $missing ]]; then note "helpers" "executable"
+else note "helpers" "FAILED (not executable:$missing)"; status=1; fi
 
 exit $status

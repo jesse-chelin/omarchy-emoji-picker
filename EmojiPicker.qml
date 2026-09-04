@@ -24,7 +24,6 @@ Item {
   readonly property string pluginId: (manifest && manifest.id) || "io.github.jesse-chelin.emoji-picker"
   readonly property string pluginDir: (manifest && manifest.__sourceDir)
     || (Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.jesse-chelin.emoji-picker")
-  readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/emoji-picker.json"
 
   property bool opened: false
   property string query: ""
@@ -52,6 +51,8 @@ Item {
   property bool canPaste: true
   property string storeRejected: ""
   property var pendingInsert: null
+  property string pendingWrite: ""
+  property string writingText: ""
 
   // Every child runs with this and nothing else. A cleared environment is
   // what actually closes BASH_ENV, ENV and the loader hooks, since a script
@@ -60,7 +61,7 @@ Item {
   // passed through, and an empty one is omitted rather than passed empty.
   readonly property var childEnvironment: {
     var env = { "PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8" }
-    var names = ["HOME", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
+    var names = ["HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
     for (var i = 0; i < names.length; i++) {
       var value = Quickshell.env(names[i])
       if (value) env[names[i]] = value
@@ -69,8 +70,14 @@ Item {
   }
 
   // A child that never exits would otherwise pin a collector open forever
-  // inside a process that lives as long as the session. TERM first, KILL if
-  // it will not go.
+  // inside a process that lives as long as the session.
+  //
+  // TERM goes to the helper, which is the leader of its own process group, so
+  // it can end the tools it started and hand the clipboard back. If it has
+  // not gone by the next tick, the escalation goes to the whole group through
+  // reap-group.py rather than to this one pid: a SIGKILL here would leave
+  // wl-copy alive and holding the selection, which is the failure this is
+  // supposed to prevent.
   component Watchdog: Timer {
     property var proc: null
     property bool escalated: false
@@ -80,10 +87,11 @@ Item {
     onTriggered: {
       if (!proc || !proc.running) return
       if (escalated) {
-        proc.signal(9)
+        root.reapGroup(proc)
         return
       }
       escalated = true
+      proc.signal(15)
       interval = 1000
       restart()
     }
@@ -93,6 +101,28 @@ Item {
       interval = 3000
       restart()
     }
+
+    // Superseded or shutting down: same ladder, started now rather than on a
+    // timeout the caller is no longer waiting out.
+    function endNow() {
+      if (!proc || !proc.running) return
+      escalated = true
+      interval = 700
+      restart()
+      proc.signal(15)
+    }
+  }
+
+  // Ends the helper and everything it started, and waits for the group to
+  // actually empty. Detached on purpose: it is needed most while this
+  // component is being destroyed, which is exactly when a child of it would
+  // be torn down mid-reap. The command prefix is this plugin's own directory,
+  // so a recycled pid in someone else's group is never signalled.
+  function reapGroup(proc) {
+    if (!proc || !proc.running || !proc.processId) return
+    Quickshell.execDetached([root.pluginDir + "/reap-group.py",
+                             String(proc.processId),
+                             root.pluginDir + "/"])
   }
 
   // Shares the [menu] surface tokens, so a theme that styles the Omarchy
@@ -177,9 +207,23 @@ Item {
       root.flash("Preferences file ignored (" + root.storeRejected + "), using defaults")
   }
 
+  // Publishing goes through state.py for the same reason reading does: the
+  // path's parent directories are as replaceable as the file, and a rename
+  // relative to a checked directory descriptor is the only way to be sure the
+  // file that appears is the file that was written. The newest document wins;
+  // a save arriving mid-write is queued rather than dropped.
   function saveStore() {
     if (!root.storeLoaded) return
-    stateFile.setText(Model.serializeState(root.store))
+    root.pendingWrite = Model.serializeState(root.store)
+    root.startWrite()
+  }
+
+  function startWrite() {
+    if (stateWriter.running || !root.pendingWrite) return
+    root.writingText = root.pendingWrite
+    root.pendingWrite = ""
+    stateWriter.stdinEnabled = true
+    stateWriter.running = true
   }
 
   function mutateStore(changes) {
@@ -292,10 +336,18 @@ Item {
   }
 
   function startInsert() {
-    if (insertProc.running || !root.pendingInsert) return
+    if (!root.pendingInsert) return
+    if (insertProc.running) {
+      // Supersede rather than queue behind it: the running paste owns the
+      // clipboard, and two of them racing for it is how the wrong character
+      // lands. Ending it restores the previous owner, and onExited starts
+      // this one.
+      insertWatchdog.endNow()
+      return
+    }
     var job = root.pendingInsert
     root.pendingInsert = null
-    insertProc.command = [root.pluginDir + "/insert.sh", job.kind, job.text]
+    insertProc.command = [root.pluginDir + "/insert.py", job.kind, job.text]
     insertProc.running = true
   }
 
@@ -520,6 +572,7 @@ Item {
     return JSON.stringify({
       opened: root.opened,
       mode: root.mode,
+      writing: stateWriter.running,
       query: root.query,
       category: root.categoryFilter,
       fuzzy: root.fuzzyResults,
@@ -688,23 +741,15 @@ Item {
     onLoadFailed: root.loadData("{}")
   }
 
-  // Write-only. blockAllReads keeps FileView from ever pulling this path into
-  // memory: it is in a directory the user can write, and QML has no way to cap
-  // what it reads. Reading goes through read-state.py, which caps the bytes,
-  // refuses a symlink and refuses anything that is not a regular file. Writes
-  // stay here because the content is ours and atomicWrites replaces the path
-  // rather than following it.
-  FileView {
-    id: stateFile
-    path: root.statePath
-    blockAllReads: true
-    atomicWrites: true
-    printErrors: false
-  }
-
+  // FileView is gone from this path entirely. It takes a string, follows every
+  // component of it, reads without a ceiling, and publishes through the same
+  // mutable path, none of which is safe for a file in a directory anything
+  // running as the user can replace. state.py walks the directory chain with
+  // O_NOFOLLOW, checks each component, and reads and renames relative to the
+  // descriptor that survived those checks.
   Process {
     id: stateReader
-    command: [root.pluginDir + "/read-state.py", root.statePath]
+    command: [root.pluginDir + "/state.py", "read"]
     clearEnvironment: true
     environment: root.childEnvironment
     stdout: StdioCollector {
@@ -720,8 +765,31 @@ Item {
   Watchdog { id: stateWatchdog; proc: stateReader }
 
   Process {
+    id: stateWriter
+    command: [root.pluginDir + "/state.py", "write"]
+    clearEnvironment: true
+    environment: root.childEnvironment
+    // The document goes over stdin, not argv: it is up to 64 KiB and argv is
+    // world-readable in /proc.
+    onStarted: {
+      stateWriter.write(root.writingText)
+      stateWriter.stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) root.flash("Preferences could not be saved")
+      root.startWrite()
+    }
+    onRunningChanged: {
+      if (running) writerWatchdog.arm()
+      else writerWatchdog.stop()
+    }
+  }
+
+  Watchdog { id: writerWatchdog; proc: stateWriter }
+
+  Process {
     id: pasteProbe
-    command: [root.pluginDir + "/insert.sh", "probe"]
+    command: [root.pluginDir + "/insert.py", "probe"]
     clearEnvironment: true
     environment: root.childEnvironment
     stdout: StdioCollector {
@@ -751,7 +819,7 @@ Item {
       else insertWatchdog.stop()
     }
     onExited: function(exitCode) {
-      // 3 is insert.sh saying it copied because wtype is not there. Anything
+      // 3 is insert.py saying it copied because wtype is not there. Anything
       // else nonzero is a real failure and the user should hear about it
       // rather than watching nothing happen.
       if (exitCode === 3) {
@@ -765,6 +833,16 @@ Item {
   }
 
   Watchdog { id: insertWatchdog; proc: insertProc }
+
+  // Nothing this component started outlives it. Each group is ended and
+  // waited out by a detached reaper, because a child of a component being
+  // destroyed cannot be relied on to finish the job.
+  Component.onDestruction: {
+    root.reapGroup(stateReader)
+    root.reapGroup(stateWriter)
+    root.reapGroup(insertProc)
+    root.reapGroup(pasteProbe)
+  }
 
   // Both are re-run on open rather than only at load, so installing wtype or
   // editing the preferences file by hand takes effect at the next summon
