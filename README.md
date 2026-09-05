@@ -145,6 +145,12 @@ The emoji data file is read with QML's `FileView` because it lives inside the
 plugin's own checkout: anyone able to rewrite it can rewrite the QML beside it,
 so a size check there would be a check against nothing.
 
+**The pixels.** Every `Text` element is pinned to `textFormat: Text.PlainText`,
+so a search string, a saved keyword or an emoji name that happens to look like
+HTML is shown, never interpreted — Qt's default is `AutoText`, which sniffs
+the string for markup. A structural check fails the build if a `Text` without
+that binding is ever added.
+
 ## Removal
 
 ```sh

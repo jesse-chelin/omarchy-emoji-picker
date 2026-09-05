@@ -963,6 +963,7 @@ Item {
               spacing: Style.spacing.md
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "Keywords for " + root.currentText + " " + (root.currentItem ? root.currentItem.n : "")
                 color: root.foreground
@@ -979,6 +980,7 @@ Item {
                 color: Util.alpha(root.foreground, 0.08)
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.fill: parent
                   anchors.leftMargin: Style.spacing.rowPaddingX
                   anchors.rightMargin: Style.spacing.rowPaddingX
@@ -993,6 +995,7 @@ Item {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "Enter  Save     Esc  Cancel"
                 color: root.foreground
@@ -1020,6 +1023,7 @@ Item {
 
           Text {
             id: searchText
+            textFormat: Text.PlainText
             anchors.left: parent.left
             anchors.right: categoryChip.left
             anchors.rightMargin: Style.spacing.md
@@ -1043,6 +1047,7 @@ Item {
 
             Text {
               id: chipLabel
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               text: (root.categoryFilter || "All Categories") + "   Tab"
               color: root.foreground
@@ -1086,6 +1091,7 @@ Item {
               height: isHeader ? root.sectionHeight : root.cellSize
 
               Text {
+                textFormat: Text.PlainText
                 anchors.fill: parent
                 anchors.leftMargin: Style.spacing.xs
                 visible: rowItem.isHeader
@@ -1128,6 +1134,7 @@ Item {
                     border.color: Util.alpha(root.accent, 0.75)
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: cell.item ? Model.withTone(cell.item, root.store.skinTone) : ""
                       // Colour emoji ignore this; the text symbol blocks do
@@ -1172,6 +1179,7 @@ Item {
             visible: root.view.flat.length === 0
 
             Text {
+              textFormat: Text.PlainText
               text: "󰞅"
               color: root.selectedText
               opacity: 0.8
@@ -1182,6 +1190,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: root.emojiData.items.length === 0
                 ? "Emoji data is missing"
                 : "No matches for “" + root.query + "”"
@@ -1194,6 +1203,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               text: root.emojiData.items.length === 0
                 ? "Run tools/build-data.py in the plugin folder"
                 : "Backspace to edit the search, or Tab to change category"
@@ -1222,6 +1232,7 @@ Item {
 
           Text {
             id: footerName
+            textFormat: Text.PlainText
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: footerHints.left
@@ -1243,6 +1254,7 @@ Item {
 
           Text {
             id: footerHints
+            textFormat: Text.PlainText
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: (root.primaryAction() === "paste" ? "Enter  Paste" : "Enter  Copy") + "     Ctrl+K  Actions"

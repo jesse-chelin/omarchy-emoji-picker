@@ -72,6 +72,7 @@ Item {
       spacing: 0
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         height: menu.headerHeight
         text: menu.title
@@ -115,6 +116,7 @@ Item {
             spacing: Style.spacing.md
 
             Text {
+              textFormat: Text.PlainText
               width: menu.showsPreview ? Style.space(28) : 0
               height: parent.height
               visible: menu.showsPreview
@@ -126,6 +128,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width - (menu.showsPreview ? Style.space(28) + parent.spacing : 0)
                 - hint.width - parent.spacing
               height: parent.height
@@ -139,6 +142,7 @@ Item {
 
             Text {
               id: hint
+              textFormat: Text.PlainText
               height: parent.height
               text: row.entry.hint || ""
               color: row.current ? menu.selectedText : menu.foreground

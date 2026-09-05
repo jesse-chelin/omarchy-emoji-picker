@@ -137,6 +137,48 @@ def latched_visibility(path):
 
 
 
+def auto_text_sinks(path):
+    """Every `Text` element must bind `textFormat: Text.PlainText`.
+
+    The default is AutoText, which sniffs the string for markup and renders
+    it rich. Search input, saved keywords and emoji names all flow into
+    these sinks, so a string that happens to look like HTML would be
+    interpreted instead of shown. The engine never warns; only the pixels
+    differ. Marketplace review flagged exactly this, so it is pinned here.
+    """
+    lines = path.read_text(encoding='utf-8').split('\n')
+    depth = 0
+    stack = []  # (line number, interior depth, [satisfied])
+    problems = []
+    for number, raw in enumerate(lines, start=1):
+        code = strip(raw)
+        opens_text = bool(re.match(r'\s*Text\s*\{', code))
+        match = re.match(r'\s*textFormat\s*:\s*([\w.]+)', code)
+        if match and stack and depth == stack[-1][1]:
+            if match.group(1) == 'Text.PlainText':
+                stack[-1][2][0] = True
+            else:
+                problems.append('%s:%d: `textFormat: %s`; only Text.PlainText '
+                                'renders user and state content literally'
+                                % (path.name, number, match.group(1)))
+        for char in code:
+            if char == '{':
+                depth += 1
+                if opens_text:
+                    stack.append((number, depth, [False]))
+                    opens_text = False
+            elif char == '}':
+                if stack and depth == stack[-1][1]:
+                    opened, _, satisfied = stack.pop()
+                    if not satisfied[0]:
+                        problems.append('%s:%d: `Text` without `textFormat: '
+                                        'Text.PlainText`; the AutoText default '
+                                        'renders markup-like content as rich text'
+                                        % (path.name, opened))
+                depth -= 1
+    return problems
+
+
 def duplicate_js_functions(path):
     """A function defined twice in one .js file.
 
@@ -178,6 +220,7 @@ def main():
         problems += duplicate_bindings(path)
         problems += shadowed_members(path)
         problems += latched_visibility(path)
+        problems += auto_text_sinks(path)
         problems += model_functions_exist(path, ROOT / 'EmojiModel.js')
     for path in sorted(ROOT.glob('*.js')):
         problems += duplicate_js_functions(path)
